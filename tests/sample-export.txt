@@ -1,0 +1,10 @@
+# Follower Sweep export — 2026-07-06
+# format: username <space> profile-url
+
+=== UNFOLLOW ===
+alice https://www.instagram.com/alice/
+bob https://www.instagram.com/bob/
+
+=== REMOVE FOLLOWER ===
+bob https://www.instagram.com/bob/
+carol https://www.instagram.com/carol/

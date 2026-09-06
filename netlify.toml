@@ -1,0 +1,10 @@
+# The deployable app lives in web/ (Vite + React, fully static).
+# `base` makes Netlify run the build from there; `command` and `publish`
+# are resolved relative to it.
+[build]
+  base = "web"
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"

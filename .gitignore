@@ -1,0 +1,17 @@
+# --- Personal Instagram data — never commit ---
+sample-data/
+connections/
+# exported action lists contain real usernames
+follower-sweep-*.txt
+*.progress.json
+
+# --- Dependencies / build output ---
+node_modules/
+dist/
+web/tests/.build/
+
+# --- OS / editor ---
+.DS_Store
+*.swp
+.vscode/
+.idea/
