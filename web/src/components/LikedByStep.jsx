@@ -37,11 +37,11 @@ function SnippetHelper() {
         Fastest: one console snippet, one paste
       </summary>
       <p className="mt-2 text-zinc-400">
-        Paste this into the DevTools <b>Console</b> on any instagram.com tab (logged in as you). It reads
-        your account from the session cookie, finds your last 3 posts, fetches each “Liked by” list, and
-        copies one combined blob to your clipboard — one paste in the box below covers all three posts.
-        (Swipe-card photos come from the followers/following snippet on the Import step, which embeds them;
-        this likes blob is just for the interaction signal.)
+        Open <b>your own profile</b> on instagram.com (so the post grid is on screen), then paste this into
+        the DevTools <b>Console</b>. It reads your recent posts straight from the grid's links, fetches each
+        “Liked by” list, and copies one combined blob to your clipboard — one paste in the box below covers
+        all three posts. (Swipe-card photos come from the followers/following snippet on the Import step,
+        which embeds them; this likes blob is just for the interaction signal.)
       </p>
       <div className="mt-2 flex rounded-lg bg-zinc-950 p-1 gap-1 text-xs">
         {modeBtn('all', 'Last 3 posts')}

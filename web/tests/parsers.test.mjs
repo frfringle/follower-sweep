@@ -219,10 +219,15 @@ await test('every generated snippet sends the full anti-403 header set and is va
   }
 })
 
-await test('all-posts snippet: cookie-derived user id, feed + likers endpoints', () => {
+await test('all-posts snippet: reads post links from the page, never hits feed/user', () => {
   const s = buildAllPostsSnippet(3)
-  assert.ok(s.includes('ds_user_id'))
-  assert.ok(s.includes('/api/v1/feed/user/'))
+  // www.instagram.com serves /api/v1/feed/user/<id>/ as an HTML shell (200
+  // text/html), which is what caused "Unexpected token '<'". It must not come
+  // back — post shortcodes are read from the profile grid's links instead.
+  assert.ok(!s.includes('/api/v1/feed/user/'), 'regression: feed/user returns HTML, not JSON')
+  assert.ok(s.includes('querySelectorAll'), 'should read post links from the page')
+  assert.ok(s.includes('a[href*="/p/"]'))
+  assert.ok(s.includes('BigInt'), 'shortcode -> media id conversion should be local')
   assert.ok(s.includes('/likers/'))
   assert.ok(s.includes('follower_sweep_bundle'))
 })
@@ -249,6 +254,28 @@ await test('follow snippet: paginates friendships endpoints via cookie-derived i
   assert.ok(s.includes('/api/v1/friendships/'))
   assert.ok(s.includes('next_max_id'))
   assert.ok(s.includes('follower_sweep_follows'))
+})
+
+await test('every snippet guards .json() against Instagram returning an HTML page', () => {
+  // A logged-out / checkpointed / wrong-tab request comes back as HTML, often
+  // with HTTP 200 — so `res.ok` passes and res.json() throws the cryptic
+  // "Unexpected token '<', "<!DOCTYPE"...". Every snippet must route JSON
+  // parsing through the content-type guard instead of calling .json() raw.
+  const snippets = [
+    buildLikersSnippet('123'),
+    buildAllPostsSnippet(3),
+    buildFollowSnippet(),
+    buildListRemovalSnippet('remove', ['bob']),
+    buildListRemovalSnippet('unfollow', ['bob']),
+  ]
+  for (const s of snippets) {
+    assert.ok(s.includes('const asJson ='), 'missing the JSON guard helper')
+    assert.ok(s.includes("ct.includes('json')"), 'guard does not check content-type')
+    assert.ok(s.includes('checkpoint'), 'guard does not explain the likely cause')
+    // no un-guarded .json() at the call sites (the guard's own `res.json()` is the sanctioned one)
+    assert.ok(!/await (?:r|q|fr|info)\.json\(\)/.test(s), 'found a raw .json() call outside the guard')
+    new Function(s)
+  }
 })
 
 await test('follow snippet: embeds avatars as downscaled data URLs (CORP workaround)', () => {

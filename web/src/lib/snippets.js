@@ -14,30 +14,55 @@
 const CSRF_LINE = `const csrf = (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '';`
 const API_HEADERS = `{ 'x-ig-app-id': '936619743392459', 'x-csrftoken': csrf, 'x-asbd-id': '129477', 'x-requested-with': 'XMLHttpRequest' }`
 
-// Fetches the likers of the logged-in user's most recent posts in one go and
-// copies a combined bundle to the clipboard. The user's own ID comes from the
-// ds_user_id session cookie, the post list from /api/v1/feed/user/<id>/, then
-// one likers request per post — count+1 requests total.
+// Instagram answers a logged-out / checkpointed / wrong-origin request with an
+// HTML page — often with HTTP 200, so an `res.ok` check sails right past it and
+// `res.json()` blows up with "Unexpected token '<', "<!DOCTYPE"...". This guard
+// checks the content-type first and explains what actually happened.
+const JSON_GUARD = `const asJson = async (res, what) => {
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('json')) {
+      console.log('⚠ ' + what + ' returned a web page, not JSON (HTTP ' + res.status + ', ' + (ct.split(';')[0] || 'unknown type') + ').');
+      console.log('   Usual causes: you are logged out · Instagram is showing a checkpoint / "unusual activity" prompt · this was pasted into the wrong tab (it must be an instagram.com tab).');
+      console.log('   Open instagram.com in a normal tab, clear any prompt, then re-run. Progress is saved.');
+      return null;
+    }
+    try { return await res.json(); } catch (e) { console.log('⚠ ' + what + ': malformed JSON — ' + e.message); return null; }
+  };`
+
+// Collects the likers of your most recent posts and copies one bundle to the
+// clipboard. Run it on your own profile page.
+//
+// It deliberately does NOT ask the API for your post list: www.instagram.com
+// does not serve /api/v1/feed/user/<id>/ (verified — it answers 200 with the
+// SPA's HTML shell, which makes res.json() throw "Unexpected token '<'").
+// Instead it reads the post links already on your profile grid: every tile is
+// an <a href="/p/<shortcode>/">, and a shortcode IS the media id in URL-safe
+// base64, so it converts locally and calls only /api/v1/media/<id>/likers/ —
+// the one endpoint confirmed to return JSON on web. Zero extra API calls.
 export function buildAllPostsSnippet(count = 3) {
   return `(async () => {
-  const uid = (document.cookie.match(/ds_user_id=(\\d+)/) || [])[1];
-  if (!uid) { console.log('Run this on instagram.com while logged in.'); return; }
   ${CSRF_LINE}
+  ${JSON_GUARD}
+  const codes = [...new Set([...document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]')]
+    .map((a) => ((a.getAttribute('href') || '').match(/\\/(?:p|reel)\\/([A-Za-z0-9_-]+)/) || [])[1])
+    .filter(Boolean))].slice(0, ${count});
+  if (!codes.length) { console.log('No post links found on this page. Open your own profile (instagram.com/<you>/) so the post grid is on screen, then re-run.'); return; }
+  console.log('found ' + codes.length + ' post(s): ' + codes.join(', '));
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  const toId = (code) => { let n = 0n; for (const c of code.slice(0, 11)) n = n * 64n + BigInt(A.indexOf(c)); return n.toString(); };
   const H = { headers: ${API_HEADERS}, credentials: 'include' };
-  const fr = await fetch('/api/v1/feed/user/' + uid + '/?count=${count}', H);
-  if (!fr.ok) { console.log('Post list request failed: ' + fr.status); return; }
-  const feed = await fr.json();
-  const items = (feed.items || []).slice(0, ${count});
-  if (!items.length) { console.log('No posts found. Response keys: ' + Object.keys(feed).join(', ')); return; }
   const posts = [];
-  for (const it of items) {
-    const id = String(it.pk || it.id).split('_')[0];
+  for (const code of codes) {
+    const id = toId(code);
     const r = await fetch('/api/v1/media/' + id + '/likers/', H);
-    if (!r.ok) { console.log('Likers failed for post ' + it.code + ': ' + r.status); continue; }
-    const j = await r.json();
-    posts.push({ code: it.code, media_id: id, users: j.users || [] });
-    console.log('/p/' + it.code + ': ' + (j.users || []).length + ' likers');
+    if (!r.ok) { console.log('likers failed for /p/' + code + ': ' + r.status + (r.status === 429 ? ' (rate limited — wait a while)' : '')); continue; }
+    const j = await asJson(r, 'likers for /p/' + code);
+    if (!j) continue;
+    posts.push({ code: code, media_id: id, users: j.users || [] });
+    console.log('/p/' + code + ': ' + (j.users || []).length + ' likers');
+    await new Promise((res) => setTimeout(res, 800));
   }
+  if (!posts.length) { console.log('No likers collected.'); return; }
   const text = JSON.stringify({ follower_sweep_bundle: 1, posts });
   console.log(text);
   try { copy(text); console.log('(copied to clipboard — paste into Follower Sweep)'); } catch {}
@@ -58,9 +83,11 @@ export function buildLikersSnippet(mediaId = null) {
   return `(async () => {
 ${idSource}
   ${CSRF_LINE}
+  ${JSON_GUARD}
   const r = await fetch('/api/v1/media/' + id + '/likers/', { headers: ${API_HEADERS}, credentials: 'include' });
   if (!r.ok) { console.log('Request failed: ' + r.status); return; }
-  const j = await r.json();
+  const j = await asJson(r, 'likers');
+  if (!j) return;
   const text = JSON.stringify(j);
   console.log(((j.users || []).length) + ' likers. JSON below — paste it into Follower Sweep:');
   console.log(text);
@@ -109,6 +136,7 @@ export function buildListRemovalSnippet(action, usernames = []) {
   const uid = (document.cookie.match(/ds_user_id=(\\d+)/) || [])[1];
   if (!uid) { console.log('Run this on instagram.com while logged in as yourself.'); return; }
   const csrf = (document.cookie.match(/csrftoken=([^;]+)/) || [])[1] || '';
+  ${JSON_GUARD}
   const KEY = 'followerSweep.assist.${action}';
   const done = new Set(JSON.parse(localStorage.getItem(KEY) || '[]'));
   const saveDone = () => localStorage.setItem(KEY, JSON.stringify([...done]));
@@ -128,7 +156,9 @@ export function buildListRemovalSnippet(action, usernames = []) {
     const q = await fetch('/api/v1/friendships/' + uid + '/${listKind}/?count=24&query=' + encodeURIComponent(name), H());
     if (!q.ok) { console.log('lookup failed for @' + name + ': ' + q.status + ' — stopping.'); return; }
     readClaim(q);
-    const hit = ((await q.json()).users || []).find((u) => (u.username || '').toLowerCase() === name);
+    const qj = await asJson(q, 'lookup for @' + name);
+    if (!qj) return;
+    const hit = (qj.users || []).find((u) => (u.username || '').toLowerCase() === name);
     if (!hit) { done.add(name); saveDone(); continue; } // already ${verb}d / not in your ${listKind}
     const r = await fetch('/api/v1/friendships/${endpoint}/' + hit.pk + '/', { method: 'POST', ...H({ 'content-type': 'application/x-www-form-urlencoded' }) });
     if (r.ok) { done.add(name); saveDone(); acted++; console.log('✓ ${verb} @' + name + '  (' + acted + ' this run · ' + left() + ' left)'); }
@@ -161,6 +191,7 @@ export function buildFollowSnippet() {
   const uid = (document.cookie.match(/ds_user_id=(\\d+)/) || [])[1];
   if (!uid) { console.log('Run this on instagram.com while logged in.'); return; }
   ${CSRF_LINE}
+  ${JSON_GUARD}
   const H = { headers: ${API_HEADERS}, credentials: 'include' };
   const out = { follower_sweep_follows: 1, followers: [], following: [] };
   for (const kind of ['followers', 'following']) {
@@ -169,7 +200,8 @@ export function buildFollowSnippet() {
       const url = '/api/v1/friendships/' + uid + '/' + kind + '/?count=200' + (maxId ? '&max_id=' + encodeURIComponent(maxId) : '');
       const r = await fetch(url, H);
       if (!r.ok) { console.log(kind + ' page ' + (page + 1) + ' failed: ' + r.status); break; }
-      const j = await r.json();
+      const j = await asJson(r, kind + ' page ' + (page + 1));
+      if (!j) break;
       for (const u of j.users || []) {
         out[kind].push({ username: u.username, full_name: u.full_name || '', profile_pic_url: u.profile_pic_url || '' });
       }
