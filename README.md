@@ -7,6 +7,14 @@ plain-text action list, then work through it manually with a queue-runner script
 export files never leave the browser tab). Part 2 only opens profile URLs in your
 default browser and waits for you to act by hand.
 
+
+
+https://github.com/user-attachments/assets/02df1e62-652b-45ab-9832-32399460e359
+
+
+
+
+
 ```
 follower-sweep/
 ├── web/              Part 1: React + Tailwind swipe app (client-side only)
