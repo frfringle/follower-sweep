@@ -370,7 +370,15 @@ await test('list-removal snippet: right endpoints/list, bakes usernames, www-cla
 
   const unfollow = buildListRemovalSnippet('unfollow', ['dave'])
   assert.ok(unfollow.includes('/api/v1/friendships/destroy/'))
-  assert.ok(!unfollow.includes('remove_follower'))
+  // check the endpoint path, not any mention of the word (comments reference it)
+  assert.ok(!unfollow.includes('/remove_follower/'))
+  // destroy is rejected with an empty body: it needs Meta's write token plus a
+  // jazoest checksum, unlike remove_follower. This asymmetry is why unfollow
+  // silently failed while removals worked.
+  assert.ok(unfollow.includes('fb_dtsg='), 'unfollow must send fb_dtsg')
+  assert.ok(unfollow.includes('jazoest='), 'unfollow must send the jazoest checksum')
+  assert.ok(unfollow.includes('DTSGInitialData'), 'must scrape the token from the page')
+  assert.ok(remove.includes('const postBody = null;'), 'remove_follower works with no body; do not change it')
   assert.ok(unfollow.includes("/' + uid + '/following/")) // unfollow drives off your following list
 
   // empty list is a safe no-op, still valid JS

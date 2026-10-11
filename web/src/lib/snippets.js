@@ -124,6 +124,10 @@ export function buildListRemovalSnippet(action, usernames = []) {
   const listKind = isRemove ? 'followers' : 'following'
   const endpoint = isRemove ? 'remove_follower' : 'destroy'
   const verb = isRemove ? 'remove follower' : 'unfollow'
+  // remove_follower is accepted with an empty body; destroy is not.
+  const POST_BODY = isRemove
+    ? 'null'
+    : "'container_module=profile&user_id=' + pk + '&fb_dtsg=' + encodeURIComponent(dtsg) + '&jazoest=' + jazoest(dtsg)"
   const targets = JSON.stringify([...new Set(usernames.map((u) => u.trim().toLowerCase()).filter(Boolean))])
   return `(async () => {
   // ==== pacing — slower is safer. Instagram's real limits are unpublished. ====
@@ -146,13 +150,24 @@ export function buildListRemovalSnippet(action, usernames = []) {
   let claim = '0';
   const H = (extra) => ({ headers: { 'x-ig-app-id': '936619743392459', 'x-csrftoken': csrf, 'x-asbd-id': '359341', 'x-requested-with': 'XMLHttpRequest', 'x-ig-www-claim': claim, ...extra }, credentials: 'include' });
   const readClaim = (res) => { claim = res.headers.get('x-ig-set-www-claim') || claim; };
-  // Index the FULL ${listKind} list once, locally. Do NOT use the endpoint's
-  // ?query= search: it returns 0 results on this account, which previously made
-  // every lookup "miss", marked each target as already-handled, and removed
-  // nobody while reporting success. Paging is the path the import already
-  // proved works.
+  // friendships/destroy (unfollow) requires Meta's write token in the POST
+  // body; friendships/remove_follower does not. Captured from the real
+  // request: container_module + user_id + fb_dtsg + jazoest (a checksum of
+  // fb_dtsg). fb_dtsg is embedded in the page's bootstrap JSON.
+  const jazoest = (s) => { let n = 0; for (let i = 0; i < s.length; i++) n += s.charCodeAt(i); return '2' + n; };
+  const pageHtml = document.documentElement.innerHTML;
+  const dtsg = (pageHtml.match(/"DTSGInitialData",\\[\\],\\{"token":"([^"]+)"/) || [])[1]
+            || (pageHtml.match(/"DTSGInitChunk",\\[\\],\\{"token":"([^"]+)"/) || [])[1]
+            || (document.querySelector('input[name="fb_dtsg"]') || {}).value || '';
+  ${isRemove ? '' : `if (!dtsg) { console.log('Could not find fb_dtsg on this page, which unfollow requires. Open your own profile (instagram.com/<you>/) and re-run.'); return; }`}
+  // Index the FULL ${listKind} list once, locally, instead of hitting the
+  // endpoint's ?query= search per target. Paging is the path the import already
+  // proved works, it costs a handful of requests instead of one per target, and
+  // a complete local index makes "this person is absent" trustworthy — which a
+  // per-target search never was, since an empty result is ambiguous between
+  // "not a follower" and "search returned nothing".
   const map = new Map();
-  let maxId = '';
+  let maxId = '', complete = false;
   for (let page = 0; page < 40; page++) {
     const url = '/api/v1/friendships/' + uid + '/${listKind}/?count=200' + (maxId ? '&max_id=' + encodeURIComponent(maxId) : '');
     const pr = await fetch(url, H());
@@ -161,20 +176,28 @@ export function buildListRemovalSnippet(action, usernames = []) {
     const pj = await asJson(pr, '${listKind} page ' + (page + 1));
     if (!pj) return;
     for (const u of pj.users || []) map.set((u.username || '').toLowerCase(), u.pk);
-    if (!pj.next_max_id) break;
+    console.log('  page ' + (page + 1) + ': +' + (pj.users || []).length + ' (total ' + map.size + ')' + (pj.next_max_id ? '' : ' [end of list]'));
+    if (!pj.next_max_id) { complete = true; break; }
     maxId = pj.next_max_id;
     await wait(400);
   }
   if (!map.size) { console.log('Could not read your ${listKind} list — stopping rather than guessing.'); return; }
+  // "Absent from the index" only proves anything if the index is COMPLETE.
+  // A truncated page walk previously let targets be marked done untouched.
+  if (!complete) console.log('⚠ Paging stopped before the end of your ${listKind} list (indexed ' + map.size + '). Anyone not found will be left pending, not marked done.');
   console.log('indexed ' + map.size + ' ${listKind} · ' + left() + ' to ${verb} (cap ' + MAX_PER_RUN + ' this run). Reload the tab any time to stop — progress is saved.');
-  let acted = 0, absent = 0;
+  let acted = 0, absent = 0, unresolved = 0;
   for (const name of TARGETS) {
     if (done.has(name)) continue;
     if (acted >= MAX_PER_RUN) { console.log('⏸ Hit this run\\'s cap (' + MAX_PER_RUN + '). ' + left() + ' left — re-run later (ideally tomorrow) to continue.'); return; }
     const pk = map.get(name);
-    // trustworthy now: we hold the whole list, so "absent" really means absent
-    if (!pk) { done.add(name); saveDone(); absent++; continue; }
-    const r = await fetch('/api/v1/friendships/${endpoint}/' + pk + '/', { method: 'POST', ...H({ 'content-type': 'application/x-www-form-urlencoded' }) });
+    if (!pk) {
+      if (complete) { done.add(name); saveDone(); absent++; }
+      else { unresolved++; console.log('? @' + name + ' not in the partial index — left pending.'); }
+      continue;
+    }
+    const postBody = ${POST_BODY};
+    const r = await fetch('/api/v1/friendships/${endpoint}/' + pk + '/', { method: 'POST', ...H({ 'content-type': 'application/x-www-form-urlencoded' }), ...(postBody ? { body: postBody } : {}) });
     readClaim(r);
     const raw = await r.text();
     let body = null; try { body = JSON.parse(raw); } catch {}
@@ -194,6 +217,7 @@ export function buildListRemovalSnippet(action, usernames = []) {
     await wait(gap);
   }
   if (absent) console.log(absent + ' target(s) were not in your ${listKind} (already handled, or they left).');
+  if (unresolved) console.log('⚠ ' + unresolved + ' target(s) could not be resolved from a partial index — still pending, re-run once the full list loads.');
   console.log('✅ Run complete · ' + acted + ' ${verb}ed this run · ' + left() + ' still pending. (Reset with: localStorage.removeItem(\\'' + KEY + '\\'))');
 })();`
 }
