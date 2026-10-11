@@ -146,30 +146,55 @@ export function buildListRemovalSnippet(action, usernames = []) {
   let claim = '0';
   const H = (extra) => ({ headers: { 'x-ig-app-id': '936619743392459', 'x-csrftoken': csrf, 'x-asbd-id': '359341', 'x-requested-with': 'XMLHttpRequest', 'x-ig-www-claim': claim, ...extra }, credentials: 'include' });
   const readClaim = (res) => { claim = res.headers.get('x-ig-set-www-claim') || claim; };
-  // bootstrap the www-claim from Instagram's own response header
-  readClaim(await fetch('/api/v1/friendships/' + uid + '/${listKind}/?count=1', H()));
-  console.log('Starting ${verb}: ' + left() + ' to go (cap ' + MAX_PER_RUN + ' this run). Reload the tab any time to stop — progress is saved.');
-  let acted = 0;
+  // Index the FULL ${listKind} list once, locally. Do NOT use the endpoint's
+  // ?query= search: it returns 0 results on this account, which previously made
+  // every lookup "miss", marked each target as already-handled, and removed
+  // nobody while reporting success. Paging is the path the import already
+  // proved works.
+  const map = new Map();
+  let maxId = '';
+  for (let page = 0; page < 40; page++) {
+    const url = '/api/v1/friendships/' + uid + '/${listKind}/?count=200' + (maxId ? '&max_id=' + encodeURIComponent(maxId) : '');
+    const pr = await fetch(url, H());
+    readClaim(pr);
+    if (!pr.ok) { console.log('${listKind} page ' + (page + 1) + ' failed: ' + pr.status + ' — stopping.'); return; }
+    const pj = await asJson(pr, '${listKind} page ' + (page + 1));
+    if (!pj) return;
+    for (const u of pj.users || []) map.set((u.username || '').toLowerCase(), u.pk);
+    if (!pj.next_max_id) break;
+    maxId = pj.next_max_id;
+    await wait(400);
+  }
+  if (!map.size) { console.log('Could not read your ${listKind} list — stopping rather than guessing.'); return; }
+  console.log('indexed ' + map.size + ' ${listKind} · ' + left() + ' to ${verb} (cap ' + MAX_PER_RUN + ' this run). Reload the tab any time to stop — progress is saved.');
+  let acted = 0, absent = 0;
   for (const name of TARGETS) {
     if (done.has(name)) continue;
     if (acted >= MAX_PER_RUN) { console.log('⏸ Hit this run\\'s cap (' + MAX_PER_RUN + '). ' + left() + ' left — re-run later (ideally tomorrow) to continue.'); return; }
-    const q = await fetch('/api/v1/friendships/' + uid + '/${listKind}/?count=24&query=' + encodeURIComponent(name), H());
-    if (!q.ok) { console.log('lookup failed for @' + name + ': ' + q.status + ' — stopping.'); return; }
-    readClaim(q);
-    const qj = await asJson(q, 'lookup for @' + name);
-    if (!qj) return;
-    const hit = (qj.users || []).find((u) => (u.username || '').toLowerCase() === name);
-    if (!hit) { done.add(name); saveDone(); continue; } // already ${verb}d / not in your ${listKind}
-    const r = await fetch('/api/v1/friendships/${endpoint}/' + hit.pk + '/', { method: 'POST', ...H({ 'content-type': 'application/x-www-form-urlencoded' }) });
-    if (r.ok) { done.add(name); saveDone(); acted++; console.log('✓ ${verb} @' + name + '  (' + acted + ' this run · ' + left() + ' left)'); }
-    else if (r.status === 400 || r.status === 429) { console.log('⛔ @' + name + ' → ' + r.status + '. Instagram is throttling/blocking. STOPPING now. Wait several hours (ideally a full day) before re-running. ' + left() + ' still to go.'); return; }
-    else { console.log('✗ @' + name + ': ' + r.status + ' — skipping this one (will retry next run).'); continue; }
+    const pk = map.get(name);
+    // trustworthy now: we hold the whole list, so "absent" really means absent
+    if (!pk) { done.add(name); saveDone(); absent++; continue; }
+    const r = await fetch('/api/v1/friendships/${endpoint}/' + pk + '/', { method: 'POST', ...H({ 'content-type': 'application/x-www-form-urlencoded' }) });
+    readClaim(r);
+    const raw = await r.text();
+    let body = null; try { body = JSON.parse(raw); } catch {}
+    // Instagram answers 200 with {"status":"fail"} / feedback_required when it
+    // soft-blocks, so the HTTP code alone is not proof the action happened.
+    if (r.ok && body && body.status === 'ok') {
+      done.add(name); saveDone(); acted++;
+      console.log('✓ ${verb} @' + name + '  (' + acted + ' this run · ' + left() + ' left)');
+    } else {
+      console.log('⛔ @' + name + ' was NOT ${verb}ed. HTTP ' + r.status + ' · body: ' + raw.slice(0, 200));
+      console.log('   Stopping so nothing else gets wrongly marked done. If that mentions feedback_required or spam, wait a day before retrying.');
+      return;
+    }
     if (left() === 0) break;
     let gap = rnd(MIN_GAP, MAX_GAP);
     if (acted % COOLDOWN_EVERY === 0) { gap = rnd(COOLDOWN[0], COOLDOWN[1]); console.log('   …breather ' + Math.round(gap / 1000) + 's…'); }
     await wait(gap);
   }
-  console.log('✅ Done — ${verb} complete for every baked-in target. (Clear with: localStorage.removeItem(\\'' + KEY + '\\'))');
+  if (absent) console.log(absent + ' target(s) were not in your ${listKind} (already handled, or they left).');
+  console.log('✅ Run complete · ' + acted + ' ${verb}ed this run · ' + left() + ' still pending. (Reset with: localStorage.removeItem(\\'' + KEY + '\\'))');
 })();`
 }
 

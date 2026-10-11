@@ -357,8 +357,14 @@ await test('list-removal snippet: right endpoints/list, bakes usernames, www-cla
   assert.ok(remove.includes('MIN_GAP') && remove.includes('MAX_GAP'))
   assert.ok(remove.includes('MAX_PER_RUN'))
   assert.ok(remove.includes('setTimeout')) // actually waits between actions
-  // stops the instant Instagram pushes back
-  assert.ok(/r\.status === 400 \|\| r\.status === 429/.test(remove))
+  // Regression: ?query= returns 0 results on a real account, so a per-target
+  // search silently "missed" everyone and removed nobody. Index by paging.
+  assert.ok(!remove.includes('&query='), 'regression: ?query= search returns 0 users')
+  assert.ok(remove.includes('next_max_id'), 'should page the full list')
+  assert.ok(remove.includes('new Map()'), 'should index username -> pk locally')
+  // Regression: HTTP 200 with {"status":"fail"} is a silent no-op, so the body
+  // must be checked before a target is marked done.
+  assert.ok(remove.includes("body.status === 'ok'"), 'must verify the response body, not just r.ok')
   // resumable progress in the page's own storage
   assert.ok(remove.includes('localStorage') && remove.includes('followerSweep.assist.remove'))
 
