@@ -7,7 +7,7 @@ plain-text action list, then work through it manually with a queue-runner script
 export files never leave the browser tab). Part 2 only opens profile URLs in your
 default browser and waits for you to act by hand.
 
-
+Test it yourself: https://exquisite-platypus-ccc63e.netlify.app
 
 https://github.com/user-attachments/assets/02df1e62-652b-45ab-9832-32399460e359
 
